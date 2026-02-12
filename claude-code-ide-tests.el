@@ -241,9 +241,12 @@ have completed before cleanup.  Waits up to 5 seconds."
 
 (ert-deftest claude-code-ide-test-get-buffer-name ()
   "Test buffer name generation using custom function."
-  ;; Test with custom function
+  ;; Test with custom function (new signature includes optional session-name)
   (let ((claude-code-ide-buffer-name-function
-         (lambda (dir) (format "test-%s" (file-name-nondirectory dir)))))
+         (lambda (dir &optional session-name)
+           (if session-name
+               (format "test-%s:%s" (file-name-nondirectory dir) session-name)
+             (format "test-%s" (file-name-nondirectory dir))))))
     (claude-code-ide-tests--with-temp-directory
      (lambda ()
        (should (string-match "^test-claude-code-ide-test-"
@@ -251,9 +254,10 @@ have completed before cleanup.  Waits up to 5 seconds."
 
   ;; Test that nil directory is handled correctly
   (let ((claude-code-ide-buffer-name-function
-         (lambda (dir) (if dir
-                           (format "*custom[%s]*" (file-name-nondirectory dir))
-                         "*custom[none]*"))))
+         (lambda (dir &optional session-name)
+           (if dir
+               (format "*custom[%s]*" (file-name-nondirectory dir))
+             "*custom[none]*"))))
     (should (equal (funcall claude-code-ide-buffer-name-function nil)
                    "*custom[none]*"))))
 
@@ -264,16 +268,18 @@ have completed before cleanup.  Waits up to 5 seconds."
       (claude-code-ide-tests--with-temp-directory
        (lambda ()
          (let ((dir (claude-code-ide--get-working-directory))
+               (session-id "test-session-123")
                (mock-process 'mock-process))
            ;; Initially no process
-           (should (null (claude-code-ide--get-process dir)))
+           (should (null (claude-code-ide--get-process session-id)))
 
-           ;; Set a process
-           (claude-code-ide--set-process mock-process dir)
-           (should (eq (claude-code-ide--get-process dir) mock-process))
+           ;; Set a process (new signature: process, session-id, project-dir)
+           (claude-code-ide--set-process mock-process session-id dir)
+           (should (eq (claude-code-ide--get-process session-id) mock-process))
 
-           ;; Get process without specifying directory
-           (should (eq (claude-code-ide--get-process) mock-process)))))
+           ;; Verify reverse lookup works
+           (should (equal (claude-code-ide--get-project-dir session-id) dir))
+           (should (member session-id (claude-code-ide--get-project-sessions dir))))))
     (claude-code-ide-tests--clear-processes)))
 
 (ert-deftest claude-code-ide-test-cleanup-dead-processes ()
@@ -486,7 +492,7 @@ have completed before cleanup.  Waits up to 5 seconds."
               ((symbol-function 'get-buffer-process)
                (lambda (buffer) mock-process))
               ((symbol-function 'claude-code-ide-mcp-start)
-               (lambda (dir) 12345)))
+               (lambda (dir session-id &optional session-name) 12345)))
 
       ;; Test vterm backend session creation
       (let ((claude-code-ide-terminal-backend 'vterm)
@@ -844,7 +850,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-custom-buffer-naming ()
   "Test custom buffer naming function."
   (let ((claude-code-ide-buffer-name-function
-         (lambda (dir)
+         (lambda (dir &optional session-name)
            (format "TEST-%s"
                    (upcase (file-name-nondirectory (directory-file-name dir)))))))
     (claude-code-ide-tests--with-temp-directory
@@ -925,6 +931,7 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-tab-bar-tracking ()
   "Test that tab-bar tabs are tracked correctly."
   (let* ((temp-dir (make-temp-file "test-project-" t))
+         (session-id "test-session-12345")
          (claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
          ;; Mock tab-bar functions
          (mock-tab '((name . "test-tab") (index . 1)))
@@ -940,15 +947,15 @@ have completed before cleanup.  Waits up to 5 seconds."
                (lambda () mock-tab))
               (tab-bar-mode tab-bar-mode-enabled))
       ;; Start MCP server
-      (let ((port (claude-code-ide-mcp-start temp-dir)))
+      (let ((port (claude-code-ide-mcp-start temp-dir session-id)))
         (should port)
-        ;; Get the session
-        (let ((session (gethash temp-dir claude-code-ide-mcp--sessions)))
+        ;; Get the session by session-id
+        (let ((session (gethash session-id claude-code-ide-mcp--sessions)))
           (should session)
           ;; Check that tab was captured
           (should (equal (claude-code-ide-mcp-session-original-tab session) mock-tab))))
       ;; Cleanup
-      (claude-code-ide-mcp-stop-session temp-dir))
+      (claude-code-ide-mcp-stop-session session-id))
     ;; Cleanup temp directory
     (delete-directory temp-dir t)))
 
@@ -1258,21 +1265,22 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-mcp-server-lifecycle ()
   "Test MCP server start and stop."
   (require 'claude-code-ide-mcp)
-  (unwind-protect
-      (progn
-        ;; Start server
-        (let ((port (claude-code-ide-mcp-start)))
-          (should (numberp port))
-          (should (>= port 10000))
-          (should (<= port 65535))
-          ;; Check lockfile exists
-          (should (file-exists-p (claude-code-ide-mcp--lockfile-path port)))
-          ;; Stop server
-          (claude-code-ide-mcp-stop)
-          ;; Check lockfile removed
-          (should-not (file-exists-p (claude-code-ide-mcp--lockfile-path port)))))
-    ;; Ensure cleanup
-    (claude-code-ide-mcp-stop)))
+  (let ((session-id "test-lifecycle-session"))
+    (unwind-protect
+        (progn
+          ;; Start server
+          (let ((port (claude-code-ide-mcp-start default-directory session-id)))
+            (should (numberp port))
+            (should (>= port 10000))
+            (should (<= port 65535))
+            ;; Check lockfile exists
+            (should (file-exists-p (claude-code-ide-mcp--lockfile-path port)))
+            ;; Stop server
+            (claude-code-ide-mcp-stop-session session-id)
+            ;; Check lockfile removed
+            (should-not (file-exists-p (claude-code-ide-mcp--lockfile-path port)))))
+      ;; Ensure cleanup
+      (ignore-errors (claude-code-ide-mcp-stop-session session-id)))))
 
 ;; Test for side window handling in openDiff
 (defvar claude-code-ide-debug-buffer)
@@ -1281,6 +1289,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   (require 'claude-code-ide-debug)
   (require 'claude-code-ide-mcp-handlers)
   (let* ((temp-dir (make-temp-file "test-project-" t))
+         (test-session-id "test-opendiff-session")
          (claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
          (claude-code-ide-debug t)
          (claude-code-ide-debug-buffer "*claude-code-ide-debug*")
@@ -1288,6 +1297,8 @@ have completed before cleanup.  Waits up to 5 seconds."
          (side-window nil)
          ;; Create a mock session for the test
          (test-session (make-claude-code-ide-mcp-session
+                        :session-id test-session-id
+                        :name nil
                         :server nil
                         :client nil
                         :port 12345
@@ -1299,8 +1310,8 @@ have completed before cleanup.  Waits up to 5 seconds."
                         :last-buffer nil
                         :active-diffs (make-hash-table :test 'equal)
                         :original-tab nil)))
-    ;; Register the test session
-    (puthash temp-dir test-session claude-code-ide-mcp--sessions)
+    ;; Register the test session by session-id
+    (puthash test-session-id test-session claude-code-ide-mcp--sessions)
     ;; Create a .git directory to make this a project
     (make-directory (expand-file-name ".git" temp-dir) t)
 
@@ -1683,6 +1694,8 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
         (project-a "/tmp/project-a/")
         (project-b "/tmp/project-b/")
+        (session-id-a "test-session-a")
+        (session-id-b "test-session-b")
         (session-a nil)
         (session-b nil)
         (deferred-responses '())
@@ -1699,13 +1712,13 @@ have completed before cleanup.  Waits up to 5 seconds."
 
             ;; Session A
             (let ((default-directory project-a))
-              (claude-code-ide-mcp-start project-a)
-              (setq session-a (gethash project-a claude-code-ide-mcp--sessions)))
+              (claude-code-ide-mcp-start project-a session-id-a)
+              (setq session-a (gethash session-id-a claude-code-ide-mcp--sessions)))
 
             ;; Session B
             (let ((default-directory project-b))
-              (claude-code-ide-mcp-start project-b)
-              (setq session-b (gethash project-b claude-code-ide-mcp--sessions)))
+              (claude-code-ide-mcp-start project-b session-id-b)
+              (setq session-b (gethash session-id-b claude-code-ide-mcp--sessions)))
 
             ;; Set up mock clients for each session
             (setf (claude-code-ide-mcp-session-client session-a) :mock-client-a)

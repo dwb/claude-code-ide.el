@@ -32,6 +32,8 @@
 
 ;; Declare functions from other files to avoid circular dependencies
 (declare-function claude-code-ide "claude-code-ide" ())
+(declare-function claude-code-ide-new-session "claude-code-ide" (&optional name))
+(declare-function claude-code-ide-switch-session "claude-code-ide" ())
 (declare-function claude-code-ide-resume "claude-code-ide" ())
 (declare-function claude-code-ide-continue "claude-code-ide" ())
 (declare-function claude-code-ide-stop "claude-code-ide" ())
@@ -317,8 +319,10 @@ Otherwise, if multiple sessions exist, prompt for selection."
   "Claude Code IDE main menu."
   [:description claude-code-ide--session-status]
   ["Claude Code IDE"
-   ["Session Management"
-    ("s" claude-code-ide--start-if-no-session :description claude-code-ide--start-description)
+   ["Session"
+    ("s" "Start/toggle session" claude-code-ide)
+    ("n" "New named session" claude-code-ide-new-session)
+    ("S" "Switch session" claude-code-ide-switch-session)
     ("c" claude-code-ide--continue-if-no-session :description claude-code-ide--continue-description)
     ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
     ("q" "Stop current session" claude-code-ide-stop)
