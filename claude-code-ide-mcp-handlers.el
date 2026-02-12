@@ -41,6 +41,10 @@
 (declare-function claude-code-ide-mcp-session-active-diffs "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-original-tab "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-session-id "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-pending-diffs "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-push-pending-diff "claude-code-ide-mcp" (session arguments))
+(declare-function claude-code-ide-mcp-session-pop-pending-diff "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp--setup-buffer-cache-hooks "claude-code-ide-mcp" ())
 (declare-function claude-code-ide--get-buffer-name "claude-code-ide" (&optional directory))
 (declare-function claude-code-ide--find-buffer-by-session-id "claude-code-ide" (session-id))
@@ -490,30 +494,14 @@ ARGUMENTS should contain `path' or `tab_name' of the file to close."
      (t
       (signal 'mcp-error '("Either 'path' or 'tab_name' must be provided"))))))
 
-(defun claude-code-ide-mcp-handle-open-diff (arguments)
-  "Open a diff view using ediff.
-ARGUMENTS should contain:
-- `old_file_path': Original file path
-- `new_file_path': New file path (usually same as old)
-- `new_file_contents': New content to diff against
-- `tab_name': Name for the diff tab"
+(defun claude-code-ide-mcp--execute-open-diff (arguments session)
+  "Execute the ediff for ARGUMENTS in the current frame.
+SESSION is the MCP session that owns this diff.
+This assumes the caller has already selected the correct frame."
   (let ((old-file-path (alist-get 'old_file_path arguments))
-        (new-file-path (alist-get 'new_file_path arguments))
         (new-file-contents (alist-get 'new_file_contents arguments))
-        (tab-name (alist-get 'tab_name arguments))
-        session)
-    ;; Validate required parameters
-    (unless (and old-file-path new-file-path new-file-contents tab-name)
-      (signal 'mcp-error '("Missing required parameters for openDiff")))
-
-    ;; Try to find session based on the file being diffed first
-    (setq session (or (claude-code-ide-mcp--find-session-for-file old-file-path)
-                      ;; Fall back to current buffer's session
-                      (claude-code-ide-mcp--get-current-session)))
-
-    ;; Ensure we have a valid session
-    (unless session
-      (signal 'mcp-error '("No active MCP session found")))
+        (new-file-path (alist-get 'new_file_path arguments))
+        (tab-name (alist-get 'tab_name arguments)))
 
     ;; Get the active diffs for this specific session
     (let ((active-diffs (claude-code-ide-mcp--get-active-diffs session)))
@@ -555,7 +543,7 @@ ARGUMENTS should contain:
                    (new-file-path . ,new-file-path)
                    (file-exists . ,file-exists)
                    (saved-winconf . ,saved-winconf)
-                   (session . ,session)  ; Store the session reference
+                   (session . ,session)
                    (created-at . ,(current-time)))
                  active-diffs))
 
@@ -607,6 +595,72 @@ ARGUMENTS should contain:
         `((deferred . t)
           (unique-key . ,tab-name)
           (session . ,session))))))
+
+(defun claude-code-ide-mcp--process-pending-diffs (session)
+  "Process any pending diffs queued on SESSION.
+Called when a session buffer becomes visible.  Each diff is executed
+via `run-with-idle-timer' to let ediff settle between invocations."
+  (when (claude-code-ide-mcp-session-pending-diffs session)
+    (let* ((session-buffer (claude-code-ide--find-buffer-by-session-id
+                            (claude-code-ide-mcp-session-session-id session)))
+           (session-window (and session-buffer
+                                (get-buffer-window session-buffer t))))
+      (when session-window
+        (let ((frame (window-frame session-window)))
+          (while (claude-code-ide-mcp-session-pending-diffs session)
+            (let ((arguments (claude-code-ide-mcp-session-pop-pending-diff session)))
+              (run-with-idle-timer
+               claude-code-ide-mcp-handlers-idle-timer-delay nil
+               (lambda ()
+                 (with-selected-frame frame
+                   (claude-code-ide-mcp--execute-open-diff arguments session)))))))))))
+
+(defun claude-code-ide-mcp-handle-open-diff (arguments &optional session)
+  "Open a diff view using ediff.
+ARGUMENTS should contain:
+- `old_file_path': Original file path
+- `new_file_path': New file path (usually same as old)
+- `new_file_contents': New content to diff against
+- `tab_name': Name for the diff tab
+SESSION, if provided, is the MCP session from the websocket dispatch."
+  (let ((old-file-path (alist-get 'old_file_path arguments))
+        (new-file-path (alist-get 'new_file_path arguments))
+        (new-file-contents (alist-get 'new_file_contents arguments))
+        (tab-name (alist-get 'tab_name arguments)))
+    ;; Validate required parameters
+    (unless (and old-file-path new-file-path new-file-contents tab-name)
+      (signal 'mcp-error '("Missing required parameters for openDiff")))
+
+    ;; Use provided session, or fall back to discovery
+    (unless session
+      (setq session (or (claude-code-ide-mcp--find-session-for-file old-file-path)
+                        (claude-code-ide-mcp--get-current-session))))
+
+    ;; Ensure we have a valid session
+    (unless session
+      (signal 'mcp-error '("No active MCP session found")))
+
+    ;; Try to run ediff in the frame where the session buffer is visible.
+    ;; If the buffer exists but isn't visible, queue for later.
+    ;; If we can't find the buffer at all, fall back to current frame.
+    (let* ((session-buffer (claude-code-ide--find-buffer-by-session-id
+                            (claude-code-ide-mcp-session-session-id session)))
+           (session-window (and session-buffer
+                                (get-buffer-window session-buffer t))))
+      (cond
+       ;; Session visible in a specific frame — execute there
+       (session-window
+        (with-selected-frame (window-frame session-window)
+          (claude-code-ide-mcp--execute-open-diff arguments session)))
+       ;; Session buffer exists but not visible — queue for later
+       (session-buffer
+        (claude-code-ide-mcp-session-push-pending-diff session arguments)
+        `((deferred . t)
+          (unique-key . ,tab-name)
+          (session . ,session)))
+       ;; Session buffer not found — fall back to current frame
+       (t
+        (claude-code-ide-mcp--execute-open-diff arguments session))))))
 
 (defun claude-code-ide-mcp--handle-ediff-quit (tab-name &optional session)
   "Handle ediff quit for TAB-NAME.

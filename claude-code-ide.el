@@ -81,6 +81,9 @@
 (declare-function vterm-send-return "vterm" ())
 (declare-function vterm--window-adjust-process-window-size "vterm" (&optional frame))
 
+;; External function declarations for MCP handlers
+(declare-function claude-code-ide-mcp--process-pending-diffs "claude-code-ide-mcp-handlers" (session))
+
 ;; External function declarations for eat
 (declare-function eat-mode "eat" ())
 (declare-function eat-exec "eat" (buffer name command startfile &rest switches))
@@ -713,6 +716,12 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
     ;; different dimensions before being displayed in this window
     (when window
       (claude-code-ide--sync-terminal-dimensions buffer window))
+    ;; Process any pending diffs that were queued while this session
+    ;; was not visible
+    (when window
+      (when-let ((session-id (buffer-local-value 'claude-code-ide--buffer-session-id buffer)))
+        (when-let ((session (claude-code-ide-mcp--get-session session-id)))
+          (claude-code-ide-mcp--process-pending-diffs session))))
     window))
 
 (defvar claude-code-ide--cleanup-in-progress nil

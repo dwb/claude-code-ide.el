@@ -119,7 +119,16 @@ Set to nil when cache needs to be invalidated.")
   last-selection   ; Last selection state
   last-buffer      ; Last active buffer
   active-diffs     ; Hash table of active diffs
-  original-tab)    ; Original tab-bar tab where Claude was opened
+  original-tab     ; Original tab-bar tab where Claude was opened
+  pending-diffs)   ; List of pending diff argument sets awaiting session visibility
+
+(defun claude-code-ide-mcp-session-push-pending-diff (session arguments)
+  "Push ARGUMENTS onto the pending-diffs list of SESSION."
+  (push arguments (claude-code-ide-mcp-session-pending-diffs session)))
+
+(defun claude-code-ide-mcp-session-pop-pending-diff (session)
+  "Pop and return the next pending diff arguments from SESSION, or nil."
+  (pop (claude-code-ide-mcp-session-pending-diffs session)))
 
 (defun claude-code-ide-mcp--get-buffer-project ()
   "Get the project directory for the current buffer.
@@ -353,7 +362,7 @@ Optional SESSION contains the MCP session context."
         (condition-case err
             (progn
               (claude-code-ide-debug "Found handler for tool: %s" tool-name)
-              (let ((result (if (member tool-name '("getDiagnostics"))
+              (let ((result (if (member tool-name '("getDiagnostics" "openDiff"))
                                 ;; Pass session to handlers that need it
                                 (funcall handler arguments session)
                               (funcall handler arguments))))

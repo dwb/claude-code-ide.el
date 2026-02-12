@@ -1322,10 +1322,16 @@ have completed before cleanup.  Waits up to 5 seconds."
         (cl-letf (((symbol-function 'claude-code-ide-mcp--get-buffer-project)
                    (lambda () temp-dir))
                   ((symbol-function 'claude-code-ide-mcp--get-current-session)
-                   (lambda () test-session)))
+                   (lambda () test-session))
+                  ;; Mock session buffer lookup to return a visible buffer
+                  ((symbol-function 'claude-code-ide--find-buffer-by-session-id)
+                   (lambda (_sid) (get-buffer-create "*test-buffer*"))))
           ;; Set up the project context
           (with-current-buffer (get-buffer-create "*test-buffer*")
             (setq default-directory temp-dir)
+
+            ;; Display the session buffer so it's visible
+            (display-buffer (current-buffer))
 
             ;; Create a side window to simulate the problem
             (let ((side-buffer (get-buffer-create "*test-sidebar*")))
@@ -1368,6 +1374,50 @@ have completed before cleanup.  Waits up to 5 seconds."
       (claude-code-ide-mcp--cleanup-diff "test-diff" test-session)
       (kill-buffer "*test-buffer*")
       (kill-buffer "*test-sidebar*"))))
+
+(ert-deftest claude-code-ide-test-opendiff-queued-when-not-visible ()
+  "Test that openDiff queues the diff when session buffer exists but is hidden."
+  (require 'claude-code-ide-mcp-handlers)
+  (let* ((test-session-id "test-queued-diff-session")
+         (claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+         (temp-dir (make-temp-file "test-project-" t))
+         (temp-file (make-temp-file "test-diff-" nil ".txt" "Original content\n"))
+         ;; Create a buffer that exists but is NOT displayed in any window
+         (hidden-buffer (get-buffer-create " *test-hidden-session*"))
+         (test-session (make-claude-code-ide-mcp-session
+                        :session-id test-session-id
+                        :project-dir temp-dir
+                        :deferred (make-hash-table :test 'equal)
+                        :active-diffs (make-hash-table :test 'equal))))
+    (puthash test-session-id test-session claude-code-ide-mcp--sessions)
+    (make-directory (expand-file-name ".git" temp-dir) t)
+
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-mcp--get-buffer-project)
+                   (lambda () temp-dir))
+                  ((symbol-function 'claude-code-ide-mcp--get-current-session)
+                   (lambda () test-session))
+                  ;; Return a buffer that exists but has no window
+                  ((symbol-function 'claude-code-ide--find-buffer-by-session-id)
+                   (lambda (_sid) hidden-buffer)))
+          (let* ((arguments `((old_file_path . ,temp-file)
+                              (new_file_path . ,temp-file)
+                              (new_file_contents . "Modified content\n")
+                              (tab_name . "queued-diff")))
+                 (result (claude-code-ide-mcp-handle-open-diff arguments)))
+            ;; Should still return deferred
+            (should (eq (alist-get 'deferred result) t))
+            ;; Should NOT have created an active diff (ediff didn't run)
+            (should-not (gethash "queued-diff"
+                                 (claude-code-ide-mcp-session-active-diffs test-session)))
+            ;; Should have queued the diff
+            (should (= 1 (length (claude-code-ide-mcp-session-pending-diffs test-session))))
+            (should (equal (car (claude-code-ide-mcp-session-pending-diffs test-session))
+                           arguments))))
+      ;; Cleanup
+      (when (buffer-live-p hidden-buffer) (kill-buffer hidden-buffer))
+      (when (file-exists-p temp-file) (delete-file temp-file))
+      (when (file-exists-p temp-dir) (delete-directory temp-dir t)))))
 
 ;;; Tests for Diagnostics
 
@@ -1620,15 +1670,21 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Test that multiple ediff sessions can run simultaneously without conflicts."
   (claude-code-ide-tests--with-temp-directory
    (lambda ()
-     (let* ((session (make-claude-code-ide-mcp-session
+     (let* ((test-session-id "test-multi-ediff-session")
+            (session (make-claude-code-ide-mcp-session
+                      :session-id test-session-id
                       :project-dir default-directory
                       :active-diffs (make-hash-table :test 'equal)))
             (file1 (expand-file-name "test-file1.txt" default-directory))
             (file2 (expand-file-name "test-file2.txt" default-directory))
+            (session-buffer (get-buffer-create "*test-multi-ediff-session*"))
             (control-buffers '()))
 
        ;; Register session in global hash table
        (puthash default-directory session claude-code-ide-mcp--sessions)
+
+       ;; Display session buffer so it's visible
+       (display-buffer session-buffer)
 
        ;; Create test files
        (with-temp-file file1 (insert "Original content 1"))
@@ -1646,7 +1702,9 @@ have completed before cleanup.  Waits up to 5 seconds."
                      (let ((suffix (or ediff-control-buffer-suffix "")))
                        (push (format "*Ediff Control Panel%s*" suffix) control-buffers))))
                   ((symbol-function 'claude-code-ide-mcp--get-current-session)
-                   (lambda () session)))
+                   (lambda () session))
+                  ((symbol-function 'claude-code-ide--find-buffer-by-session-id)
+                   (lambda (_sid) session-buffer)))
 
          ;; Simulate opening multiple diffs
          (unwind-protect
@@ -1688,6 +1746,7 @@ have completed before cleanup.  Waits up to 5 seconds."
            (claude-code-ide-mcp-handle-close-all-diff-tabs nil)
            (when (file-exists-p file1) (delete-file file1))
            (when (file-exists-p file2) (delete-file file2))
+           (when (buffer-live-p session-buffer) (kill-buffer session-buffer))
            ;; Remove session from global hash table
            (remhash default-directory claude-code-ide-mcp--sessions)))))))
 
