@@ -43,6 +43,7 @@
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp--setup-buffer-cache-hooks "claude-code-ide-mcp" ())
 (declare-function claude-code-ide--get-buffer-name "claude-code-ide" (&optional directory))
+(declare-function claude-code-ide--find-buffer-by-session-id "claude-code-ide" (session-id))
 (declare-function claude-code-ide--display-buffer-in-side-window "claude-code-ide" (buffer))
 (defvar ediff-control-buffer)
 (defvar ediff-window-setup-function)
@@ -234,9 +235,8 @@ STARTUP-HOOK-FN is the hook function to remove after use."
           (claude-window nil))
       ;; Restore Claude side window only if user wants it shown during ediff
       (when claude-code-ide-show-claude-window-in-ediff
-        (when-let* ((project-dir (claude-code-ide-mcp-session-project-dir session))
-                    (claude-buffer-name (claude-code-ide--get-buffer-name project-dir))
-                    (claude-buffer (get-buffer claude-buffer-name)))
+        (when-let* ((session-id (claude-code-ide-mcp-session-session-id session))
+                    (claude-buffer (claude-code-ide--find-buffer-by-session-id session-id)))
           (when (buffer-live-p claude-buffer)
             ;; Display Claude buffer in side window and save the window
             (setq claude-window (claude-code-ide--display-buffer-in-side-window claude-buffer)))))

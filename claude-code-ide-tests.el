@@ -1551,6 +1551,7 @@ have completed before cleanup.  Waits up to 5 seconds."
   (claude-code-ide-tests--with-temp-directory
    (lambda ()
      (let* ((session (make-claude-code-ide-mcp-session
+                      :session-id "test-session-id"
                       :project-dir default-directory
                       :active-diffs (make-hash-table :test 'equal)))
             (test-file (expand-file-name "test.txt" default-directory))
@@ -1567,8 +1568,8 @@ have completed before cleanup.  Waits up to 5 seconds."
        (make-directory (expand-file-name ".git" default-directory) t)
 
        ;; Mock relevant functions
-       (cl-letf* (((symbol-function 'claude-code-ide--get-buffer-name)
-                   (lambda (&optional _dir) "*Claude Code Test*"))
+       (cl-letf* (((symbol-function 'claude-code-ide--find-buffer-by-session-id)
+                   (lambda (_sid) claude-buffer-created))
                   ((symbol-function 'claude-code-ide--display-buffer-in-side-window)
                    (lambda (buffer)
                      (setq claude-window-displayed t)
