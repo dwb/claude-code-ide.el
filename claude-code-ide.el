@@ -1113,18 +1113,23 @@ Use this to run multiple Claude sessions in parallel."
 ;;;###autoload
 (defun claude-code-ide-switch-session ()
   "Switch between Claude Code sessions for the current project.
-If multiple sessions exist, prompt to choose one.
-If only one session exists, switch to it directly."
+Excludes the current session from the list.
+If multiple other sessions exist, prompt to choose one.
+If only one other session exists, switch to it directly."
   (interactive)
   (let* ((working-dir (claude-code-ide--get-working-directory))
-         (sessions (claude-code-ide--get-project-sessions working-dir)))
+         (current-session-id (gethash working-dir claude-code-ide--last-active-session))
+         (sessions (seq-remove (lambda (sid) (equal sid current-session-id))
+                               (claude-code-ide--get-project-sessions working-dir))))
     (cond
      ((null sessions)
-      (user-error "No Claude sessions for this project"))
+      (user-error "No other Claude sessions for this project"))
      ((= (length sessions) 1)
       (let ((buffer (claude-code-ide--find-buffer-by-session-id (car sessions))))
         (if buffer
-            (claude-code-ide--display-buffer-in-side-window buffer)
+            (progn
+              (claude-code-ide--display-buffer-in-side-window buffer)
+              (puthash working-dir (car sessions) claude-code-ide--last-active-session))
           (user-error "Session buffer no longer exists"))))
      (t
       (let* ((choices (mapcar (lambda (sid)
@@ -1139,7 +1144,6 @@ If only one session exists, switch to it directly."
         (if buffer
             (progn
               (claude-code-ide--display-buffer-in-side-window buffer)
-              ;; Update last-active
               (puthash working-dir session-id claude-code-ide--last-active-session))
           (user-error "Session buffer no longer exists")))))))
 

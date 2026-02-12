@@ -320,9 +320,9 @@ Otherwise, if multiple sessions exist, prompt for selection."
   [:description claude-code-ide--session-status]
   ["Claude Code IDE"
    ["Session"
-    ("s" "Start/toggle session" claude-code-ide)
+    ("C-'" "Start/toggle session" claude-code-ide)
     ("n" "New named session" claude-code-ide-new-session)
-    ("S" "Switch session" claude-code-ide-switch-session)
+    ("C-c" "Switch session" claude-code-ide-switch-session)
     ("c" claude-code-ide--continue-if-no-session :description claude-code-ide--continue-description)
     ("r" claude-code-ide--resume-if-no-session :description claude-code-ide--resume-description)
     ("q" "Stop current session" claude-code-ide-stop)
