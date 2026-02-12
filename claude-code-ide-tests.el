@@ -1588,7 +1588,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                (ediff-control-buffer (get-buffer-create "*Ediff Control*")))
            (setq claude-window-displayed nil)
            ;; Call the startup handler
-           (claude-code-ide-mcp--handle-ediff-startup "test-diff" session nil
+           (claude-code-ide-mcp--handle-ediff-startup "test-diff" session
                                                       (lambda () nil))
            ;; Should display Claude window
            (should claude-window-displayed))
@@ -1598,7 +1598,7 @@ have completed before cleanup.  Waits up to 5 seconds."
                (ediff-control-buffer (get-buffer-create "*Ediff Control*")))
            (setq claude-window-displayed nil)
            ;; Call the startup handler
-           (claude-code-ide-mcp--handle-ediff-startup "test-diff" session nil
+           (claude-code-ide-mcp--handle-ediff-startup "test-diff" session
                                                       (lambda () nil))
            ;; Should NOT display Claude window
            (should-not claude-window-displayed))

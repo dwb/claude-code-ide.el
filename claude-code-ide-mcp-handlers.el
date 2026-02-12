@@ -48,6 +48,7 @@
 (defvar ediff-window-setup-function)
 (defvar ediff-split-window-function)
 (defvar ediff-control-buffer-suffix)
+(defvar ediff-after-quit-hook-internal)
 (defvar claude-code-ide-mcp--sessions)
 (defvar claude-code-ide-show-claude-window-in-ediff)
 (defvar claude-code-ide-focus-claude-after-ediff)
@@ -142,12 +143,48 @@ Returns a cons cell (buffer-A . buffer-B)."
 
     (cons buffer-A buffer-B)))
 
-(defun claude-code-ide-mcp--setup-diff-hooks (tab-name session saved-winconf)
-  "Set up ediff hooks for TAB-NAME with SESSION and SAVED-WINCONF.
+;;; Ediff quit hook support
+
+(defvar-local claude-code-ide-mcp--ediff-tab-name nil
+  "Tab name for this ediff control buffer's diff session.")
+
+(defvar-local claude-code-ide-mcp--ediff-session nil
+  "MCP session for this ediff control buffer's diff session.")
+
+(defvar claude-code-ide-mcp--pending-winconf nil
+  "Window configuration to restore after ediff cleanup completes.
+Staged by the quit handler, consumed by the after-quit handler.")
+
+(defun claude-code-ide-mcp--ediff-quit-handler ()
+  "Handle ediff quit for a Claude Code diff session.
+Reads context from buffer-local variables in the ediff control buffer.
+Added to `ediff-quit-hook' buffer-locally; runs before `ediff-cleanup-mess'."
+  (let* ((tab-name claude-code-ide-mcp--ediff-tab-name)
+         (session claude-code-ide-mcp--ediff-session)
+         (active-diffs (claude-code-ide-mcp--get-active-diffs session))
+         (diff-info (gethash tab-name active-diffs))
+         (quit-from-claude (alist-get 'quit-from-claude diff-info))
+         (saved-winconf (alist-get 'saved-winconf diff-info)))
+    (unless quit-from-claude
+      (claude-code-ide-mcp--handle-ediff-quit tab-name session))
+    (when saved-winconf
+      (setq claude-code-ide-mcp--pending-winconf saved-winconf))))
+
+(defun claude-code-ide-mcp--ediff-restore-winconf ()
+  "Restore window configuration after ediff cleanup.
+Runs via `ediff-after-quit-hook-internal', after `ediff-cleanup-mess'
+has finished its window manipulation."
+  (when claude-code-ide-mcp--pending-winconf
+    (condition-case nil
+        (set-window-configuration claude-code-ide-mcp--pending-winconf)
+      (error nil))
+    (setq claude-code-ide-mcp--pending-winconf nil)))
+
+(defun claude-code-ide-mcp--setup-diff-hooks (tab-name session)
+  "Set up ediff hooks for TAB-NAME with SESSION.
 Returns a cons cell (before-setup-hook-fn . startup-hook-fn)."
   (let* ((captured-tab-name tab-name)
          (captured-session session)
-         (captured-winconf saved-winconf)
          (before-setup-hook-fn nil)
          (startup-hook-fn nil))
 
@@ -161,12 +198,12 @@ Returns a cons cell (before-setup-hook-fn . startup-hook-fn)."
     (setq startup-hook-fn
           (lambda ()
             (claude-code-ide-mcp--handle-ediff-startup
-             captured-tab-name captured-session captured-winconf startup-hook-fn)))
+             captured-tab-name captured-session startup-hook-fn)))
 
     (cons before-setup-hook-fn startup-hook-fn)))
 
-(defun claude-code-ide-mcp--handle-ediff-startup (tab-name session saved-winconf startup-hook-fn)
-  "Handle ediff startup for TAB-NAME with SESSION and SAVED-WINCONF.
+(defun claude-code-ide-mcp--handle-ediff-startup (tab-name session startup-hook-fn)
+  "Handle ediff startup for TAB-NAME with SESSION.
 STARTUP-HOOK-FN is the hook function to remove after use."
   ;; Capture the control buffer and store it in diff-info
   (when ediff-control-buffer
@@ -178,23 +215,16 @@ STARTUP-HOOK-FN is the hook function to remove after use."
         (puthash tab-name diff-info active-diffs)))
 
     (with-current-buffer ediff-control-buffer
-      ;; Set up quit hook with captured values in lexical closure
-      (setq-local ediff-quit-hook
-                  (list (lambda ()
-                          ;; Check if this quit was initiated by Claude
-                          (let* ((active-diffs (claude-code-ide-mcp--get-active-diffs session))
-                                 (diff-info (gethash tab-name active-diffs))
-                                 (quit-from-claude (alist-get 'quit-from-claude diff-info)))
-                            (unless quit-from-claude
-                              ;; Only handle quit if not initiated by Claude
-                              (claude-code-ide-mcp--handle-ediff-quit
-                               tab-name
-                               session)))
-                          ;; Always restore window configuration
-                          (when saved-winconf
-                            (condition-case nil
-                                (set-window-configuration saved-winconf)
-                              (error nil)))))))
+      ;; Store context for the named quit handler
+      (setq claude-code-ide-mcp--ediff-tab-name tab-name
+            claude-code-ide-mcp--ediff-session session)
+      ;; Our handler runs before ediff-cleanup-mess (which stays on the
+      ;; global hook via the implicit `t' that `add-hook' inserts).
+      (add-hook 'ediff-quit-hook #'claude-code-ide-mcp--ediff-quit-handler nil t)
+      ;; Restore windows after ediff-cleanup-mess finishes all its
+      ;; window manipulation and buffer killing.
+      (setq-local ediff-after-quit-hook-internal
+                  (list #'claude-code-ide-mcp--ediff-restore-winconf)))
 
     ;; Jump to the first difference if there are any
     (ignore-errors (ediff-next-difference))
@@ -530,7 +560,7 @@ ARGUMENTS should contain:
                  active-diffs))
 
       ;; Set up startup hook to configure ediff after it's fully initialized
-      (let* ((hooks (claude-code-ide-mcp--setup-diff-hooks tab-name session saved-winconf))
+      (let* ((hooks (claude-code-ide-mcp--setup-diff-hooks tab-name session))
              (before-setup-hook-fn (car hooks))
              (startup-hook-fn (cdr hooks)))
 
