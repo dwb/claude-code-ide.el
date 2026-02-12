@@ -440,14 +440,15 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let ((test-prompt "Test prompt from minibuffer")
         (prompted-string nil)
         (sent-string nil)
-        (sent-return nil))
+        (sent-return nil)
+        (mock-buffer nil))
     ;; Mock read-string to return our test prompt
     (cl-letf (((symbol-function 'read-string)
                (lambda (prompt &rest _)
                  (setq prompted-string prompt)
                  test-prompt))
-              ((symbol-function 'claude-code-ide--get-buffer-name)
-               (lambda () "*test-claude-buffer*"))
+              ((symbol-function 'claude-code-ide--get-last-active-buffer)
+               (lambda (&optional _dir) mock-buffer))
               ((symbol-function 'claude-code-ide--terminal-send-string)
                (lambda (str) (setq sent-string str)))
               ((symbol-function 'claude-code-ide--terminal-send-return)
@@ -455,13 +456,14 @@ have completed before cleanup.  Waits up to 5 seconds."
 
       ;; Test with existing buffer
       (with-temp-buffer
-        (rename-buffer "*test-claude-buffer*")
+        (setq mock-buffer (current-buffer))
         (claude-code-ide-send-prompt)
         (should (equal prompted-string "Claude prompt: "))
         (should (equal sent-string test-prompt))
         (should sent-return))
 
-      ;; Test with non-existent buffer (should error)
+      ;; Test with no active session (should error)
+      (setq mock-buffer nil)
       (should-error (claude-code-ide-send-prompt) :type 'user-error)
 
       ;; Test with empty prompt (should not send anything)
@@ -469,7 +471,7 @@ have completed before cleanup.  Waits up to 5 seconds."
       (cl-letf (((symbol-function 'read-string)
                  (lambda (&rest _) "")))
         (with-temp-buffer
-          (rename-buffer "*test-claude-buffer*")
+          (setq mock-buffer (current-buffer))
           (claude-code-ide-send-prompt)
           (should (null sent-string))
           (should (null sent-return)))))))

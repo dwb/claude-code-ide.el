@@ -566,17 +566,18 @@ Optional SESSION contains the MCP session context."
                                         (expand-file-name file-path)))
               (setf (claude-code-ide-mcp-session-last-buffer session) (current-buffer))
               ;; Update MCP tools server's last active buffer
-              (when-let ((session-id (gethash project-dir claude-code-ide--session-ids)))
-                (claude-code-ide-mcp-server-update-last-active-buffer session-id (current-buffer)))
-              (run-at-time claude-code-ide-mcp-initial-notification-delay nil
-                           (lambda ()
-                             (when-let ((s (gethash project-dir claude-code-ide-mcp--sessions)))
-                               (let ((file-path (buffer-file-name)))
-                                 (claude-code-ide-mcp--send-notification
-                                  "workspace/didChangeActiveEditor"
-                                  `((uri . ,(concat "file://" file-path))
-                                    (path . ,file-path)
-                                    (name . ,(buffer-name))))))))))
+              (claude-code-ide-mcp-server-update-last-active-buffer
+               (claude-code-ide-mcp-session-session-id session) (current-buffer))
+              (let ((sid (claude-code-ide-mcp-session-session-id session)))
+                (run-at-time claude-code-ide-mcp-initial-notification-delay nil
+                             (lambda ()
+                               (when (gethash sid claude-code-ide-mcp--sessions)
+                                 (let ((file-path (buffer-file-name)))
+                                   (claude-code-ide-mcp--send-notification
+                                    "workspace/didChangeActiveEditor"
+                                    `((uri . ,(concat "file://" file-path))
+                                      (path . ,file-path)
+                                      (name . ,(buffer-name)))))))))))
           (claude-code-ide-debug "Warning: Could not find session for WebSocket connection")))))
 
 (defun claude-code-ide-mcp--on-message (ws frame)
@@ -801,8 +802,8 @@ This should be called when the buffer's context might have changed."
                                         (expand-file-name file-path)))
               (setf (claude-code-ide-mcp-session-last-buffer session) current-buffer)
               ;; Update MCP tools server's last active buffer
-              (when-let ((session-id (gethash project-dir claude-code-ide--session-ids)))
-                (claude-code-ide-mcp-server-update-last-active-buffer session-id current-buffer))
+              (claude-code-ide-mcp-server-update-last-active-buffer
+               (claude-code-ide-mcp-session-session-id session) current-buffer)
               ;; Send notification
               (claude-code-ide-mcp--send-notification
                "workspace/didChangeActiveEditor"
