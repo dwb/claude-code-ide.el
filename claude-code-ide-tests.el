@@ -2358,6 +2358,8 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let* ((test-session-id "test-notif-bg-session")
          (claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
          (claude-code-ide--sessions-with-notifications nil)
+         (claude-code-ide--notification-plists (make-hash-table :test 'equal))
+         (claude-code-ide--notification-id-to-session (make-hash-table :test 'eql))
          (temp-dir (make-temp-file "test-project-" t))
          (temp-file (make-temp-file "test-diff-" nil ".txt" "Original\n"))
          (hidden-buffer (get-buffer-create " *test-notif-hidden*"))
@@ -2384,11 +2386,12 @@ have completed before cleanup.  Waits up to 5 seconds."
              (new_file_path . ,temp-file)
              (new_file_contents . "Modified\n")
              (tab_name . "bg-diff")))
-          ;; Hook should have been called with :background t
+          ;; Hook should have been called with :background t and an :id
           (should (= 1 (length hook-calls)))
           (let ((plist (cadr (car hook-calls))))
             (should (eq (plist-get plist :type) 'edit))
-            (should (eq (plist-get plist :background) t)))
+            (should (eq (plist-get plist :background) t))
+            (should (integerp (plist-get plist :id))))
           ;; Session should be on notification list
           (should (member test-session-id claude-code-ide--sessions-with-notifications))
           ;; Edit count should be 1
@@ -2403,6 +2406,8 @@ have completed before cleanup.  Waits up to 5 seconds."
   (let* ((test-session-id "test-notif-fg-session")
          (claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
          (claude-code-ide--sessions-with-notifications nil)
+         (claude-code-ide--notification-plists (make-hash-table :test 'equal))
+         (claude-code-ide--notification-id-to-session (make-hash-table :test 'eql))
          (temp-dir (make-temp-file "test-project-" t))
          (temp-file (make-temp-file "test-diff-" nil ".txt" "Original\n"))
          (visible-buffer (get-buffer-create "*test-notif-visible*"))
@@ -2431,11 +2436,12 @@ have completed before cleanup.  Waits up to 5 seconds."
              (new_file_path . ,temp-file)
              (new_file_contents . "Modified\n")
              (tab_name . "fg-diff")))
-          ;; Hook should have been called with :background nil
+          ;; Hook should have been called with :background nil and an :id
           (should (= 1 (length hook-calls)))
           (let ((plist (cadr (car hook-calls))))
             (should (eq (plist-get plist :type) 'edit))
-            (should (eq (plist-get plist :background) nil)))
+            (should (eq (plist-get plist :background) nil))
+            (should (integerp (plist-get plist :id))))
           ;; Session should still be on notification list
           (should (member test-session-id claude-code-ide--sessions-with-notifications)))
       ;; Cleanup ediff if it started
@@ -2454,12 +2460,20 @@ have completed before cleanup.  Waits up to 5 seconds."
   "Verify notification cleared when pending-edit-count reaches zero."
   (let* ((test-session-id "test-notif-clear-session")
          (claude-code-ide--sessions-with-notifications (list test-session-id))
+         (claude-code-ide--notification-plists (make-hash-table :test 'equal))
+         (claude-code-ide--notification-id-to-session (make-hash-table :test 'eql))
+         (claude-code-ide-notification-clear-functions nil)
          (test-session (make-claude-code-ide-mcp-session
                         :session-id test-session-id
                         :project-dir "/tmp/test"
                         :deferred (make-hash-table :test 'equal)
                         :active-diffs (make-hash-table :test 'equal)
                         :pending-edit-count 2)))
+    ;; Seed stored plists as if two notifications had been added
+    (puthash test-session-id
+             '((:type edit :background t :id 2) (:type edit :background t :id 1))
+             claude-code-ide--notification-plists)
+
     ;; Decrement from 2 to 1 — should NOT clear
     (let ((new-count (claude-code-ide-mcp-session-decrement-edit-count test-session)))
       (should (= 1 new-count))
@@ -2477,7 +2491,10 @@ have completed before cleanup.  Waits up to 5 seconds."
 (ert-deftest claude-code-ide-test-notification-list-ordering ()
   "Verify most-recent-first ordering of notification list."
   (let ((claude-code-ide--sessions-with-notifications nil)
-        (claude-code-ide-notification-functions nil))
+        (claude-code-ide--notification-plists (make-hash-table :test 'equal))
+        (claude-code-ide--notification-id-to-session (make-hash-table :test 'eql))
+        (claude-code-ide-notification-functions nil)
+        (claude-code-ide-notification-clear-functions nil))
     ;; Add session-A
     (claude-code-ide--add-notification "session-A" '(:type edit :background t))
     (should (equal claude-code-ide--sessions-with-notifications '("session-A")))
@@ -2490,6 +2507,86 @@ have completed before cleanup.  Waits up to 5 seconds."
     ;; Clear session-A
     (claude-code-ide--clear-notification "session-A")
     (should (equal claude-code-ide--sessions-with-notifications '("session-B")))))
+
+(ert-deftest claude-code-ide-test-notification-ids-unique ()
+  "Verify each notification gets a unique integer :id."
+  (let ((claude-code-ide--sessions-with-notifications nil)
+        (claude-code-ide--notification-plists (make-hash-table :test 'equal))
+        (claude-code-ide--notification-id-to-session (make-hash-table :test 'eql))
+        (claude-code-ide-notification-functions nil)
+        (ids nil))
+    (dotimes (_ 5)
+      (let ((captured-id nil))
+        (let ((claude-code-ide-notification-functions
+               (list (lambda (_sid plist)
+                       (setq captured-id (plist-get plist :id))))))
+          (claude-code-ide--add-notification "s" '(:type edit :background t)))
+        (should (integerp captured-id))
+        (should-not (member captured-id ids))
+        (push captured-id ids)))))
+
+(ert-deftest claude-code-ide-test-notification-clear-hook ()
+  "Verify clear hook fires with original plists including :id."
+  (let ((claude-code-ide--sessions-with-notifications nil)
+        (claude-code-ide--notification-plists (make-hash-table :test 'equal))
+        (claude-code-ide--notification-id-to-session (make-hash-table :test 'eql))
+        (claude-code-ide-notification-functions nil)
+        (claude-code-ide-notification-clear-functions nil)
+        (add-ids nil)
+        (clear-calls nil))
+    ;; Capture IDs on add
+    (let ((claude-code-ide-notification-functions
+           (list (lambda (_sid plist) (push (plist-get plist :id) add-ids)))))
+      (claude-code-ide--add-notification "s1" '(:type edit :background t))
+      (claude-code-ide--add-notification "s1" '(:type edit :background nil)))
+    ;; Two plists stored for s1
+    (should (= 2 (length (gethash "s1" claude-code-ide--notification-plists))))
+    ;; Reverse lookup populated
+    (dolist (id add-ids)
+      (should (equal "s1" (gethash id claude-code-ide--notification-id-to-session))))
+
+    ;; Clear — hook should fire twice with matching IDs
+    (let ((claude-code-ide-notification-clear-functions
+           (list (lambda (sid plist) (push (list sid plist) clear-calls)))))
+      (claude-code-ide--clear-notification "s1"))
+    (should (= 2 (length clear-calls)))
+    ;; Each clear call should have an :id that was in add-ids
+    (dolist (call clear-calls)
+      (should (equal (car call) "s1"))
+      (should (member (plist-get (cadr call) :id) add-ids)))
+    ;; Plists hash should be empty for s1
+    (should-not (gethash "s1" claude-code-ide--notification-plists))
+    ;; Reverse lookup cleaned up
+    (dolist (id add-ids)
+      (should-not (gethash id claude-code-ide--notification-id-to-session)))
+    ;; Session removed from notification list
+    (should-not (member "s1" claude-code-ide--sessions-with-notifications))))
+
+(ert-deftest claude-code-ide-test-focus-notification ()
+  "Verify focus-notification switches to the session for a given notification ID."
+  (let* ((claude-code-ide--sessions-with-notifications nil)
+         (claude-code-ide--notification-plists (make-hash-table :test 'equal))
+         (claude-code-ide--notification-id-to-session (make-hash-table :test 'eql))
+         (claude-code-ide-notification-functions nil)
+         (switched-to nil)
+         (captured-id nil))
+    ;; Add a notification and capture its ID
+    (let ((claude-code-ide-notification-functions
+           (list (lambda (_sid plist) (setq captured-id (plist-get plist :id))))))
+      (claude-code-ide--add-notification "target-session" '(:type edit :background t)))
+    (cl-letf (((symbol-function 'claude-code-ide--switch-to-session)
+               (lambda (sid) (setq switched-to sid))))
+      ;; Focus by notification ID
+      (claude-code-ide-focus-notification captured-id)
+      (should (equal switched-to "target-session"))
+      ;; Unknown ID should message, not switch
+      (setq switched-to nil)
+      (let ((msg nil))
+        (cl-letf (((symbol-function 'message)
+                   (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+          (claude-code-ide-focus-notification 99999)
+          (should-not switched-to)
+          (should (string-match "No session found" msg)))))))
 
 (ert-deftest claude-code-ide-test-next-notification-command ()
   "Verify next-notification command switches to correct session."

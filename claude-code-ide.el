@@ -277,8 +277,18 @@ a more stable viewing experience when working with multiple windows."
 Each function is called with two arguments:
   SESSION-ID: string identifier for the session
   PLIST: property list with notification details, e.g.
-         (:type edit :background t)
+         (:type edit :background t :id 1)
 Functions might display notifications, play sounds, update mode lines, etc."
+  :type 'hook
+  :group 'claude-code-ide)
+
+(defcustom claude-code-ide-notification-clear-functions nil
+  "Functions called when a notification is cleared.
+Each function is called with two arguments:
+  SESSION-ID: string identifier for the session
+  PLIST: the same property list that was passed to
+         `claude-code-ide-notification-functions' when the
+         notification was created (including the :id)"
   :type 'hook
   :group 'claude-code-ide)
 
@@ -320,6 +330,15 @@ Functions might display notifications, play sounds, update mode lines, etc."
 
 (defvar claude-code-ide--sessions-with-notifications nil
   "List of session IDs with pending notifications, most recent first.")
+
+(defvar claude-code-ide--notification-counter 0
+  "Counter for generating unique notification IDs.")
+
+(defvar claude-code-ide--notification-plists (make-hash-table :test 'equal)
+  "Hash table mapping session IDs to lists of active notification plists.")
+
+(defvar claude-code-ide--notification-id-to-session (make-hash-table :test 'eql)
+  "Hash table mapping notification IDs to session IDs.")
 
 ;;; Vterm Rendering Optimization
 
@@ -1367,14 +1386,27 @@ If no Claude windows are visible, show the most recently accessed one."
 
 (defun claude-code-ide--add-notification (session-id plist)
   "Add or update notification for SESSION-ID with PLIST details.
-Calls `claude-code-ide-notification-functions' and maintains notification list."
-  (run-hook-with-args 'claude-code-ide-notification-functions session-id plist)
-  (setq claude-code-ide--sessions-with-notifications
-        (cons session-id
-              (remove session-id claude-code-ide--sessions-with-notifications))))
+Assigns a unique `:id' to PLIST, calls `claude-code-ide-notification-functions',
+and maintains the notification list."
+  (let ((plist (plist-put (copy-sequence plist)
+                          :id (cl-incf claude-code-ide--notification-counter))))
+    ;; Store plist and reverse lookup
+    (let ((existing (gethash session-id claude-code-ide--notification-plists)))
+      (puthash session-id (cons plist existing) claude-code-ide--notification-plists))
+    (puthash (plist-get plist :id) session-id claude-code-ide--notification-id-to-session)
+    (run-hook-with-args 'claude-code-ide-notification-functions session-id plist)
+    (setq claude-code-ide--sessions-with-notifications
+          (cons session-id
+                (remove session-id claude-code-ide--sessions-with-notifications)))))
 
 (defun claude-code-ide--clear-notification (session-id)
-  "Clear notification for SESSION-ID."
+  "Clear notifications for SESSION-ID.
+Calls `claude-code-ide-notification-clear-functions' once per stored
+notification plist, then removes SESSION-ID from the notification list."
+  (dolist (plist (gethash session-id claude-code-ide--notification-plists))
+    (run-hook-with-args 'claude-code-ide-notification-clear-functions session-id plist)
+    (remhash (plist-get plist :id) claude-code-ide--notification-id-to-session))
+  (remhash session-id claude-code-ide--notification-plists)
   (setq claude-code-ide--sessions-with-notifications
         (remove session-id claude-code-ide--sessions-with-notifications)))
 
@@ -1389,6 +1421,14 @@ Calls `claude-code-ide-notification-functions' and maintains notification list."
     ;; Not visible - display it
     (when buffer
       (claude-code-ide--display-buffer-in-side-window buffer))))
+
+;;;###autoload
+(defun claude-code-ide-focus-notification (notification-id)
+  "Focus the frame and session associated with NOTIFICATION-ID."
+  (interactive "nNotification ID: ")
+  (if-let ((session-id (gethash notification-id claude-code-ide--notification-id-to-session)))
+      (claude-code-ide--switch-to-session session-id)
+    (message "No session found for notification %d" notification-id)))
 
 ;;;###autoload
 (defun claude-code-ide-next-notification ()
