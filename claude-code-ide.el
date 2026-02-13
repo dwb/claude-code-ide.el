@@ -759,6 +759,32 @@ If `claude-code-ide-focus-on-open' is non-nil, the window is selected."
 (defvar claude-code-ide--cleanup-in-progress nil
   "Flag to prevent recursive cleanup calls.")
 
+(defun claude-code-ide-session-info (session-id)
+  "Return a plist of useful properties for SESSION-ID, or nil.
+Properties:
+  :session-id   - the session ID string
+  :name         - user-provided session name, or nil
+  :project-dir  - absolute project directory
+  :project-name - short project directory name
+  :buffer-name  - name of the terminal buffer, or nil
+  :display-name - human-readable label (\"project:name\" or \"project\")"
+  (when-let ((session (claude-code-ide-mcp--get-session session-id)))
+    (let* ((name (claude-code-ide-mcp-session-name session))
+           (project-dir (claude-code-ide-mcp-session-project-dir session))
+           (project-name (file-name-nondirectory
+                          (directory-file-name project-dir)))
+           (buffer (claude-code-ide--find-buffer-by-session-id session-id))
+           (buffer-name (and buffer (buffer-name buffer)))
+           (display-name (if name
+                             (format "%s:%s" project-name name)
+                           project-name)))
+      (list :session-id session-id
+            :name name
+            :project-dir project-dir
+            :project-name project-name
+            :buffer-name buffer-name
+            :display-name display-name))))
+
 (defun claude-code-ide--find-buffer-by-session-id (session-id)
   "Find the Claude Code buffer for SESSION-ID."
   (cl-find-if (lambda (buf)

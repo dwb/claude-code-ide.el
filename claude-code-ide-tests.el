@@ -2607,6 +2607,34 @@ have completed before cleanup.  Waits up to 5 seconds."
         (claude-code-ide-next-notification)
         (should (string-match "No sessions" message-output))))))
 
+(ert-deftest claude-code-ide-test-session-info ()
+  "Test session-info returns useful properties."
+  (let* ((claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+         (test-session (make-claude-code-ide-mcp-session
+                        :session-id "info-test"
+                        :name "my-task"
+                        :project-dir "/home/user/myproject"
+                        :deferred (make-hash-table :test 'equal)
+                        :active-diffs (make-hash-table :test 'equal))))
+    (puthash "info-test" test-session claude-code-ide-mcp--sessions)
+    (let ((info (claude-code-ide-session-info "info-test")))
+      (should info)
+      (should (equal (plist-get info :session-id) "info-test"))
+      (should (equal (plist-get info :name) "my-task"))
+      (should (equal (plist-get info :project-dir) "/home/user/myproject"))
+      (should (equal (plist-get info :project-name) "myproject"))
+      (should (equal (plist-get info :display-name) "myproject:my-task"))
+      (should (null (plist-get info :buffer-name))))
+
+    ;; Without a name
+    (setf (claude-code-ide-mcp-session-name test-session) nil)
+    (let ((info (claude-code-ide-session-info "info-test")))
+      (should (equal (plist-get info :display-name) "myproject"))
+      (should (null (plist-get info :name))))
+
+    ;; Unknown session
+    (should (null (claude-code-ide-session-info "nonexistent")))))
+
 (ert-deftest claude-code-ide-test-notification-edit-count-accessors ()
   "Test increment and decrement of pending-edit-count."
   (let ((session (make-claude-code-ide-mcp-session
