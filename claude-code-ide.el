@@ -1443,7 +1443,8 @@ notification plist, then removes SESSION-ID from the notification list."
       ;; Already visible - switch to its frame and window
       (progn
         (select-frame-set-input-focus (window-frame window))
-        (select-window window))
+        (select-window window)
+        (vterm-reset-cursor-point))
     ;; Not visible - display it
     (when buffer
       (claude-code-ide--display-buffer-in-side-window buffer))))

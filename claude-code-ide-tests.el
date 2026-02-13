@@ -2428,7 +2428,10 @@ have completed before cleanup.  Waits up to 5 seconds."
                    (lambda () test-session))
                   ;; Buffer is visible in a window — foreground
                   ((symbol-function 'claude-code-ide--find-buffer-by-session-id)
-                   (lambda (_sid) visible-buffer)))
+                   (lambda (_sid) visible-buffer))
+                  ;; Simulate Emacs having OS focus
+                  ((symbol-function 'frame-focus-state)
+                   (lambda (&optional _frame) t)))
           ;; Display the buffer so get-buffer-window returns non-nil
           (display-buffer visible-buffer)
           (claude-code-ide-mcp-handle-open-diff

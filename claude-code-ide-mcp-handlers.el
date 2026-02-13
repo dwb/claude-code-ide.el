@@ -659,7 +659,8 @@ SESSION, if provided, is the MCP session from the websocket dispatch."
                                 (get-buffer-window session-buffer t)))
            (background (or (not session-window)
                            (not (eq (window-frame session-window)
-                                    (selected-frame))))))
+                                    (selected-frame)))
+                           (not (frame-focus-state)))))
 
       ;; Track this edit and notify
       (claude-code-ide-mcp-session-increment-edit-count session)
