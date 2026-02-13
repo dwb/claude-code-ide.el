@@ -45,7 +45,11 @@
 (declare-function claude-code-ide-mcp-session-pending-diffs "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp-session-push-pending-diff "claude-code-ide-mcp" (session arguments))
 (declare-function claude-code-ide-mcp-session-pop-pending-diff "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-increment-edit-count "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-decrement-edit-count "claude-code-ide-mcp" (session))
 (declare-function claude-code-ide-mcp--setup-buffer-cache-hooks "claude-code-ide-mcp" ())
+(declare-function claude-code-ide--add-notification "claude-code-ide" (session-id plist))
+(declare-function claude-code-ide--clear-notification "claude-code-ide" (session-id))
 (declare-function claude-code-ide--get-buffer-name "claude-code-ide" (&optional directory))
 (declare-function claude-code-ide--find-buffer-by-session-id "claude-code-ide" (session-id))
 (declare-function claude-code-ide--display-buffer-in-side-window "claude-code-ide" (buffer))
@@ -172,6 +176,12 @@ Added to `ediff-quit-hook' buffer-locally; runs before `ediff-cleanup-mess'."
          (saved-winconf (alist-get 'saved-winconf diff-info)))
     (unless quit-from-claude
       (claude-code-ide-mcp--handle-ediff-quit tab-name session))
+    ;; Decrement edit count; clear notification when no edits remain
+    (when session
+      (let ((new-count (claude-code-ide-mcp-session-decrement-edit-count session)))
+        (when (zerop new-count)
+          (claude-code-ide--clear-notification
+           (claude-code-ide-mcp-session-session-id session)))))
     (when saved-winconf
       (setq claude-code-ide-mcp--pending-winconf saved-winconf))))
 
@@ -643,10 +653,18 @@ SESSION, if provided, is the MCP session from the websocket dispatch."
     ;; Try to run ediff in the frame where the session buffer is visible.
     ;; If the buffer exists but isn't visible, queue for later.
     ;; If we can't find the buffer at all, fall back to current frame.
-    (let* ((session-buffer (claude-code-ide--find-buffer-by-session-id
-                            (claude-code-ide-mcp-session-session-id session)))
+    (let* ((session-id (claude-code-ide-mcp-session-session-id session))
+           (session-buffer (claude-code-ide--find-buffer-by-session-id session-id))
            (session-window (and session-buffer
-                                (get-buffer-window session-buffer t))))
+                                (get-buffer-window session-buffer t)))
+           (background (not session-window)))
+
+      ;; Track this edit and notify
+      (claude-code-ide-mcp-session-increment-edit-count session)
+      (claude-code-ide--add-notification
+       session-id
+       `(:type edit :background ,background))
+
       (cond
        ;; Session visible in a specific frame — execute there
        (session-window

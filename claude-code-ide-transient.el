@@ -44,6 +44,7 @@
 (declare-function claude-code-ide-send-escape "claude-code-ide" ())
 (declare-function claude-code-ide-insert-newline "claude-code-ide" ())
 (declare-function claude-code-ide-toggle "claude-code-ide" ())
+(declare-function claude-code-ide-next-notification "claude-code-ide" ())
 (declare-function claude-code-ide-check-status "claude-code-ide" ())
 (declare-function claude-code-ide--ensure-cli "claude-code-ide" ())
 (declare-function claude-code-ide-mcp--active-sessions "claude-code-ide-mcp" ())
@@ -330,7 +331,8 @@ Otherwise, if multiple sessions exist, prompt for selection."
    ["Navigation"
     ("b" "Switch to Claude buffer" claude-code-ide-switch-to-buffer)
     ("w" "Toggle window visibility" claude-code-ide-toggle-window)
-    ("W" "Toggle recent window" claude-code-ide-toggle-recent)]
+    ("W" "Toggle recent window" claude-code-ide-toggle-recent)
+    ("C-n" "Next notification" claude-code-ide-next-notification)]
    ["Interaction"
     ("i" "Insert selection" claude-code-ide-insert-at-mentioned)
     ("p" "Send prompt from minibuffer" claude-code-ide-send-prompt)

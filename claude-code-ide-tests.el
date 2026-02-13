@@ -2350,6 +2350,187 @@ have completed before cleanup.  Waits up to 5 seconds."
           (should (equal (plist-get file-path-arg :description)
                          "Path to the file to analyze for symbols")))))))
 
+;;; Tests for Notification System
+
+(ert-deftest claude-code-ide-test-notification-on-background-edit ()
+  "Verify notification hooks called with :background t for hidden sessions."
+  (require 'claude-code-ide-mcp-handlers)
+  (let* ((test-session-id "test-notif-bg-session")
+         (claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+         (claude-code-ide--sessions-with-notifications nil)
+         (temp-dir (make-temp-file "test-project-" t))
+         (temp-file (make-temp-file "test-diff-" nil ".txt" "Original\n"))
+         (hidden-buffer (get-buffer-create " *test-notif-hidden*"))
+         (hook-calls nil)
+         (claude-code-ide-notification-functions
+          (list (lambda (sid plist) (push (list sid plist) hook-calls))))
+         (test-session (make-claude-code-ide-mcp-session
+                        :session-id test-session-id
+                        :project-dir temp-dir
+                        :deferred (make-hash-table :test 'equal)
+                        :active-diffs (make-hash-table :test 'equal))))
+    (puthash test-session-id test-session claude-code-ide-mcp--sessions)
+    (make-directory (expand-file-name ".git" temp-dir) t)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-mcp--get-buffer-project)
+                   (lambda () temp-dir))
+                  ((symbol-function 'claude-code-ide-mcp--get-current-session)
+                   (lambda () test-session))
+                  ;; Buffer exists but has no window — background
+                  ((symbol-function 'claude-code-ide--find-buffer-by-session-id)
+                   (lambda (_sid) hidden-buffer)))
+          (claude-code-ide-mcp-handle-open-diff
+           `((old_file_path . ,temp-file)
+             (new_file_path . ,temp-file)
+             (new_file_contents . "Modified\n")
+             (tab_name . "bg-diff")))
+          ;; Hook should have been called with :background t
+          (should (= 1 (length hook-calls)))
+          (let ((plist (cadr (car hook-calls))))
+            (should (eq (plist-get plist :type) 'edit))
+            (should (eq (plist-get plist :background) t)))
+          ;; Session should be on notification list
+          (should (member test-session-id claude-code-ide--sessions-with-notifications))
+          ;; Edit count should be 1
+          (should (= 1 (or (claude-code-ide-mcp-session-pending-edit-count test-session) 0))))
+      (when (buffer-live-p hidden-buffer) (kill-buffer hidden-buffer))
+      (when (file-exists-p temp-file) (delete-file temp-file))
+      (when (file-exists-p temp-dir) (delete-directory temp-dir t)))))
+
+(ert-deftest claude-code-ide-test-notification-on-foreground-edit ()
+  "Verify notification hooks called with :background nil for visible sessions."
+  (require 'claude-code-ide-mcp-handlers)
+  (let* ((test-session-id "test-notif-fg-session")
+         (claude-code-ide-mcp--sessions (make-hash-table :test 'equal))
+         (claude-code-ide--sessions-with-notifications nil)
+         (temp-dir (make-temp-file "test-project-" t))
+         (temp-file (make-temp-file "test-diff-" nil ".txt" "Original\n"))
+         (visible-buffer (get-buffer-create "*test-notif-visible*"))
+         (hook-calls nil)
+         (claude-code-ide-notification-functions
+          (list (lambda (sid plist) (push (list sid plist) hook-calls))))
+         (test-session (make-claude-code-ide-mcp-session
+                        :session-id test-session-id
+                        :project-dir temp-dir
+                        :deferred (make-hash-table :test 'equal)
+                        :active-diffs (make-hash-table :test 'equal))))
+    (puthash test-session-id test-session claude-code-ide-mcp--sessions)
+    (make-directory (expand-file-name ".git" temp-dir) t)
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-code-ide-mcp--get-buffer-project)
+                   (lambda () temp-dir))
+                  ((symbol-function 'claude-code-ide-mcp--get-current-session)
+                   (lambda () test-session))
+                  ;; Buffer is visible in a window — foreground
+                  ((symbol-function 'claude-code-ide--find-buffer-by-session-id)
+                   (lambda (_sid) visible-buffer)))
+          ;; Display the buffer so get-buffer-window returns non-nil
+          (display-buffer visible-buffer)
+          (claude-code-ide-mcp-handle-open-diff
+           `((old_file_path . ,temp-file)
+             (new_file_path . ,temp-file)
+             (new_file_contents . "Modified\n")
+             (tab_name . "fg-diff")))
+          ;; Hook should have been called with :background nil
+          (should (= 1 (length hook-calls)))
+          (let ((plist (cadr (car hook-calls))))
+            (should (eq (plist-get plist :type) 'edit))
+            (should (eq (plist-get plist :background) nil)))
+          ;; Session should still be on notification list
+          (should (member test-session-id claude-code-ide--sessions-with-notifications)))
+      ;; Cleanup ediff if it started
+      (when (and (boundp 'ediff-control-buffer)
+                 ediff-control-buffer
+                 (buffer-live-p ediff-control-buffer))
+        (with-current-buffer ediff-control-buffer
+          (setq ediff-quit-hook nil)
+          (ediff-really-quit nil)))
+      (claude-code-ide-mcp--cleanup-diff "fg-diff" test-session)
+      (when (buffer-live-p visible-buffer) (kill-buffer visible-buffer))
+      (when (file-exists-p temp-file) (delete-file temp-file))
+      (when (file-exists-p temp-dir) (delete-directory temp-dir t)))))
+
+(ert-deftest claude-code-ide-test-notification-cleared-after-ediff-quit ()
+  "Verify notification cleared when pending-edit-count reaches zero."
+  (let* ((test-session-id "test-notif-clear-session")
+         (claude-code-ide--sessions-with-notifications (list test-session-id))
+         (test-session (make-claude-code-ide-mcp-session
+                        :session-id test-session-id
+                        :project-dir "/tmp/test"
+                        :deferred (make-hash-table :test 'equal)
+                        :active-diffs (make-hash-table :test 'equal)
+                        :pending-edit-count 2)))
+    ;; Decrement from 2 to 1 — should NOT clear
+    (let ((new-count (claude-code-ide-mcp-session-decrement-edit-count test-session)))
+      (should (= 1 new-count))
+      (when (zerop new-count)
+        (claude-code-ide--clear-notification test-session-id)))
+    (should (member test-session-id claude-code-ide--sessions-with-notifications))
+
+    ;; Decrement from 1 to 0 — should clear
+    (let ((new-count (claude-code-ide-mcp-session-decrement-edit-count test-session)))
+      (should (= 0 new-count))
+      (when (zerop new-count)
+        (claude-code-ide--clear-notification test-session-id)))
+    (should-not (member test-session-id claude-code-ide--sessions-with-notifications))))
+
+(ert-deftest claude-code-ide-test-notification-list-ordering ()
+  "Verify most-recent-first ordering of notification list."
+  (let ((claude-code-ide--sessions-with-notifications nil)
+        (claude-code-ide-notification-functions nil))
+    ;; Add session-A
+    (claude-code-ide--add-notification "session-A" '(:type edit :background t))
+    (should (equal claude-code-ide--sessions-with-notifications '("session-A")))
+    ;; Add session-B — should be first
+    (claude-code-ide--add-notification "session-B" '(:type edit :background t))
+    (should (equal claude-code-ide--sessions-with-notifications '("session-B" "session-A")))
+    ;; Re-add session-A — should move to front
+    (claude-code-ide--add-notification "session-A" '(:type edit :background nil))
+    (should (equal claude-code-ide--sessions-with-notifications '("session-A" "session-B")))
+    ;; Clear session-A
+    (claude-code-ide--clear-notification "session-A")
+    (should (equal claude-code-ide--sessions-with-notifications '("session-B")))))
+
+(ert-deftest claude-code-ide-test-next-notification-command ()
+  "Verify next-notification command switches to correct session."
+  (let* ((switched-to nil)
+         (claude-code-ide--sessions-with-notifications '("session-X" "session-Y"))
+         (message-output nil))
+    (cl-letf (((symbol-function 'claude-code-ide--switch-to-session)
+               (lambda (sid) (setq switched-to sid))))
+      ;; Should switch to the first session
+      (claude-code-ide-next-notification)
+      (should (equal switched-to "session-X")))
+
+    ;; With empty list, should message
+    (let ((claude-code-ide--sessions-with-notifications nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (setq message-output (apply #'format fmt args)))))
+        (claude-code-ide-next-notification)
+        (should (string-match "No sessions" message-output))))))
+
+(ert-deftest claude-code-ide-test-notification-edit-count-accessors ()
+  "Test increment and decrement of pending-edit-count."
+  (let ((session (make-claude-code-ide-mcp-session
+                  :session-id "test"
+                  :project-dir "/tmp"
+                  :deferred (make-hash-table :test 'equal)
+                  :active-diffs (make-hash-table :test 'equal))))
+    ;; Initially nil (treated as 0)
+    (should (null (claude-code-ide-mcp-session-pending-edit-count session)))
+    ;; Increment from nil
+    (should (= 1 (claude-code-ide-mcp-session-increment-edit-count session)))
+    (should (= 1 (claude-code-ide-mcp-session-pending-edit-count session)))
+    ;; Increment again
+    (should (= 2 (claude-code-ide-mcp-session-increment-edit-count session)))
+    ;; Decrement
+    (should (= 1 (claude-code-ide-mcp-session-decrement-edit-count session)))
+    ;; Decrement to zero
+    (should (= 0 (claude-code-ide-mcp-session-decrement-edit-count session)))
+    ;; Decrement below zero — clamped at 0
+    (should (= 0 (claude-code-ide-mcp-session-decrement-edit-count session)))))
+
 (provide 'claude-code-ide-tests)
 
 ;; Local Variables:

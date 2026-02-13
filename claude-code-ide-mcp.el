@@ -120,7 +120,8 @@ Set to nil when cache needs to be invalidated.")
   last-buffer      ; Last active buffer
   active-diffs     ; Hash table of active diffs
   original-tab     ; Original tab-bar tab where Claude was opened
-  pending-diffs)   ; List of pending diff argument sets awaiting session visibility
+  pending-diffs    ; List of pending diff argument sets awaiting session visibility
+  pending-edit-count) ; Number of active + queued ediffs (nil treated as 0)
 
 (defun claude-code-ide-mcp-session-push-pending-diff (session arguments)
   "Push ARGUMENTS onto the pending-diffs list of SESSION."
@@ -129,6 +130,18 @@ Set to nil when cache needs to be invalidated.")
 (defun claude-code-ide-mcp-session-pop-pending-diff (session)
   "Pop and return the next pending diff arguments from SESSION, or nil."
   (pop (claude-code-ide-mcp-session-pending-diffs session)))
+
+(defun claude-code-ide-mcp-session-increment-edit-count (session)
+  "Increment pending edit count for SESSION and return new count."
+  (let ((count (or (claude-code-ide-mcp-session-pending-edit-count session) 0)))
+    (setf (claude-code-ide-mcp-session-pending-edit-count session) (1+ count))
+    (1+ count)))
+
+(defun claude-code-ide-mcp-session-decrement-edit-count (session)
+  "Decrement pending edit count for SESSION and return new count (minimum 0)."
+  (let ((count (or (claude-code-ide-mcp-session-pending-edit-count session) 0)))
+    (setf (claude-code-ide-mcp-session-pending-edit-count session) (max 0 (1- count)))
+    (max 0 (1- count))))
 
 (defun claude-code-ide-mcp--get-buffer-project ()
   "Get the project directory for the current buffer.

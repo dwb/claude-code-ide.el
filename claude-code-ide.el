@@ -272,6 +272,16 @@ a more stable viewing experience when working with multiple windows."
   :type 'boolean
   :group 'claude-code-ide)
 
+(defcustom claude-code-ide-notification-functions nil
+  "Functions called when a session has a new notification.
+Each function is called with two arguments:
+  SESSION-ID: string identifier for the session
+  PLIST: property list with notification details, e.g.
+         (:type edit :background t)
+Functions might display notifications, play sounds, update mode lines, etc."
+  :type 'hook
+  :group 'claude-code-ide)
+
 (define-obsolete-variable-alias
   'claude-code-ide-eat-initialization-delay
   'claude-code-ide-terminal-initialization-delay
@@ -307,6 +317,9 @@ a more stable viewing experience when working with multiple windows."
 
 (defvar-local claude-code-ide--buffer-session-name nil
   "The user-provided name for this Claude Code session, or nil if unnamed.")
+
+(defvar claude-code-ide--sessions-with-notifications nil
+  "List of session IDs with pending notifications, most recent first.")
 
 ;;; Vterm Rendering Optimization
 
@@ -1349,6 +1362,41 @@ If no Claude windows are visible, show the most recently accessed one."
      ;; No recent session available
      (t
       (user-error "No recent Claude Code session to toggle")))))
+
+;;; Notification System
+
+(defun claude-code-ide--add-notification (session-id plist)
+  "Add or update notification for SESSION-ID with PLIST details.
+Calls `claude-code-ide-notification-functions' and maintains notification list."
+  (run-hook-with-args 'claude-code-ide-notification-functions session-id plist)
+  (setq claude-code-ide--sessions-with-notifications
+        (cons session-id
+              (remove session-id claude-code-ide--sessions-with-notifications))))
+
+(defun claude-code-ide--clear-notification (session-id)
+  "Clear notification for SESSION-ID."
+  (setq claude-code-ide--sessions-with-notifications
+        (remove session-id claude-code-ide--sessions-with-notifications)))
+
+(defun claude-code-ide--switch-to-session (session-id)
+  "Switch to session with SESSION-ID, handling frame switching."
+  (if-let* ((buffer (claude-code-ide--find-buffer-by-session-id session-id))
+            (window (get-buffer-window buffer t)))
+      ;; Already visible - switch to its frame and window
+      (progn
+        (select-frame-set-input-focus (window-frame window))
+        (select-window window))
+    ;; Not visible - display it
+    (when buffer
+      (claude-code-ide--display-buffer-in-side-window buffer))))
+
+;;;###autoload
+(defun claude-code-ide-next-notification ()
+  "Switch to the next session with waiting notifications."
+  (interactive)
+  (if-let ((session-id (car claude-code-ide--sessions-with-notifications)))
+      (claude-code-ide--switch-to-session session-id)
+    (message "No sessions with waiting notifications")))
 
 (provide 'claude-code-ide)
 
